@@ -31,6 +31,8 @@ class VehicleGlobalPositionListener(Node):
         self.initialization_counter = 0
         self.arm_state = False
         self.vehicle_local_position = VehicleLocalPosition()
+        self.arm_timestamp = None
+        self.flight_start_timestamp = None
 
         # Create publishers
         self.offboard_control_mode_publisher = self.create_publisher(
@@ -155,6 +157,10 @@ class VehicleGlobalPositionListener(Node):
     # )
     def vehicle_status_callback(self, vehicle_status):
         """Callback function for vehicle_status topic subscriber."""
+        # Store arm timestamp on transition to armed
+        if (self.vehicle_status is None or self.vehicle_status.arming_state != 2) and vehicle_status.arming_state == 2:
+            self.arm_timestamp = vehicle_status.timestamp
+            self.flight_start_timestamp = vehicle_status.takeoff_time if vehicle_status.takeoff_time > 0 else None
         self.vehicle_status = vehicle_status
         
     def timer_callback(self) -> None:
@@ -165,17 +171,26 @@ class VehicleGlobalPositionListener(Node):
         # Wait for vehicle status to be initialized
         if self.vehicle_status is None:
             return
-        pass
     
     def timer_debug_callback(self) -> None:
         if self.vehicle_status is None:
             return        
         print("\n\n\n=== Vehicle Status Report ===")
-        
+
         # Arming Status
         print("\n--- Arming Status ---")
         arming_state = "ARMED" if self.vehicle_status.arming_state == 2 else "DISARMED"
         print(f"State: {arming_state}")
+        
+        current_time = self.vehicle_status.timestamp
+        
+        # Always show times, but only calculate them if armed
+        if self.vehicle_status.arming_state == 2 and self.arm_timestamp is not None:
+            armed_duration = int((current_time - self.arm_timestamp) / 1e6)  # Convert microseconds to seconds
+        else:
+            armed_duration = 0
+        print(f"[s] Armed time: {armed_duration}")
+        
         
         # Print arming/disarming reason if relevant
         arm_disarm_reasons = {
@@ -191,15 +206,13 @@ class VehicleGlobalPositionListener(Node):
         elif self.vehicle_status.arming_state == 2:  # Armed
             reason = arm_disarm_reasons.get(self.vehicle_status.latest_arming_reason, "Unknown")
             print(f"Last arm reason: {reason}")
-            armed_time = self.vehicle_status.armed_time / 1e6  # Convert to seconds from us
-            print(f"Armed time: {armed_time:.1f} seconds")
             
         # Navigation State
         print("\n--- Navigation Status ---")
         navigation_states = {
             0: "Manual - Direct manual control via RC",
-            1: "Altitude Control - Manual control with altitude stabilization",
-            2: "Position Control - Manual position control with stabilization",
+            1: "Altitude Control - Altitude stabilization",
+            2: "Position Control - Position control with stabilization",
             3: "Auto Mission - Autonomous mission execution",
             4: "Auto Loiter - Holding position automatically",
             5: "Auto Return to Launch - Returning to launch position",
@@ -249,28 +262,43 @@ class VehicleGlobalPositionListener(Node):
         
         # Safety Status
         print("\n--- Safety Status ---")
-        print(f"Safety switch: {'Present' if self.vehicle_status.safety_button_available else 'Not Present'}, " +
-              f"{'SAFE' if not self.vehicle_status.safety_off else 'NOT SAFE'}")
+        # print(f"Safety switch: {'Present' if self.vehicle_status.safety_button_available else 'Not Present'}, " +
+        #       f"{'SAFE' if not self.vehicle_status.safety_off else 'NOT SAFE'}")
         print(f"Pre-flight checks: {'PASS' if self.vehicle_status.pre_flight_checks_pass else 'FAIL'}")
         
         # Position Status
         print("\n--- Position Status ---")
-        print(f"Dead reckoning?: {self.vehicle_local_position.dead_reckoning}")
+        print(f"Dead reckoning: {self.vehicle_local_position.dead_reckoning}")
+        print("\nValidity Checks:")
+        print(f"{'Sensor':20} {'Valid?'}")
+        print("-" * 30)
+        print(f"{'Terrain altitude':20} {self.vehicle_local_position.dist_bottom_valid}")
+        print(f"{'Position XY':20} {self.vehicle_local_position.xy_valid}")
+        print(f"{'Position Z':20} {self.vehicle_local_position.z_valid}")
         
-        print(f"Terrain alt valid? {self.vehicle_local_position.dist_bottom_valid}, pos XY valid? {self.vehicle_local_position.xy_valid}, pos Z valid? {self.vehicle_local_position.z_valid}")
-        print(f"Terrain altitude: {self.vehicle_local_position.dist_bottom}")
-        print(f"Terrain altitude std. dev: {self.vehicle_local_position.dist_bottom_var}")
+        print("\nPosition Data:")
+        print(f"{'Parameter':25} {'Value':>10} {'Uncertainty StdDev σ':>10}")
+        print("-" * 45)
+        print(f"{'[m] Terrain altitude':25} {self.vehicle_local_position.dist_bottom:>10.3f} {self.vehicle_local_position.dist_bottom_var:>10.3f}")
+        print(f"{'[m] Local NED X':25} {self.vehicle_local_position.x:>10.3f} {self.vehicle_local_position.eph:>10.3f}")
+        print(f"{'[m] Local NED Y':25} {self.vehicle_local_position.y:>10.3f} {self.vehicle_local_position.eph:>10.3f}")
+        print(f"{'[m] Local NED Z':25} {self.vehicle_local_position.z:>10.3f} {self.vehicle_local_position.epv:>10.3f}")
         
-        print(f"Local NED pos x: {self.vehicle_local_position.x}, y: {self.vehicle_local_position.y}, z: {self.vehicle_local_position.z}")
-        print(f"Pos std. dev XY: {self.vehicle_local_position.eph} Z: {self.vehicle_local_position.evh}")
+        print("\nGlobal Position:")
+        print(f"{'Parameter':20} {'Valid?':<8} {'Value'}")
+        print("-" * 40)
+        print(f"{'Global XY':20} {str(self.vehicle_local_position.xy_global):<8} {self.vehicle_local_position.ref_lat:>.3f}, {self.vehicle_local_position.ref_lon:.3f}")
+        print(f"{'Global Z':20} {str(self.vehicle_local_position.z_global):<8} {self.vehicle_local_position.ref_alt:.3f}")
         
-        print("--- Global ---")
-        print(f"Global XY valid? {self.vehicle_local_position.xy_global}, Z valid? {self.vehicle_local_position.z_global}")
-        print(f"Global NED pos x: {self.vehicle_local_position.ref_lat}, y: {self.vehicle_local_position.ref_lon}, z: {self.vehicle_local_position.ref_alt}")
+        print("\nVelocity Data:")
+        print(f"{'Parameter':25} {'Value':>10} {'Uncertainty Std Dev σ':>10}")
+        print("-" * 45)
+        print(f"{'[m/s] Local NED VX':25} {self.vehicle_local_position.vx:>10.3f} {self.vehicle_local_position.evh:>10.3f}")
+        print(f"{'[m/s] Local NED VY':25} {self.vehicle_local_position.vy:>10.3f} {self.vehicle_local_position.evh:>10.3f}")
+        print(f"{'[m/s] Local NED VZ':25} {self.vehicle_local_position.vz:>10.3f} {self.vehicle_local_position.evv:>10.3f}")
         
-        print("--- Velocity ---")
-        print(f"Local NED vx: {self.vehicle_local_position.vx}, vy: {self.vehicle_local_position.vy}, vz: {self.vehicle_local_position.vz}")
-        print(f"Velocity std. dev XY: {self.vehicle_local_position.evh} Z: {self.vehicle_local_position.evv}")
+        print(f"\n{'[deg] Global Heading':25} {self.vehicle_local_position.heading * 57.2958:>10.3f} {self.vehicle_local_position.heading_var * 57.2958:>10.3f}")
+
     
     # -----
         
