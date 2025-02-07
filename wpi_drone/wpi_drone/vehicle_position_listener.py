@@ -3,10 +3,11 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from px4_msgs.msg import VehicleGlobalPosition, OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition, VehicleStatus, Cpuload, BatteryStatus
+from px4_msgs.msg import VehicleOdometry, OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition, VehicleStatus, BatteryStatus
 from datetime import datetime
+import math
 
-
+# most coordinates are in NED (North, East, Down) frame, local coordinate offset inputs are in FLU (Forward, Left, Up) frame
 class VehicleGlobalPositionListener(Node):
     def __init__(self):
         super().__init__('vehicle_global_position_listener')
@@ -20,12 +21,13 @@ class VehicleGlobalPositionListener(Node):
         )
         
         # Debug logging
-        self.get_logger().info("Starting subscriber with QoS profile:")
-        self.get_logger().info(f"Reliability: {qos_profile.reliability}")
-        self.get_logger().info(f"Durability: {qos_profile.durability}")
-        self.get_logger().info(f"History: {qos_profile.history}")
-        self.get_logger().info(f"Depth: {qos_profile.depth}")
         debug_printout = True
+        if debug_printout:
+            self.get_logger().info("Starting subscriber with QoS profile:")
+            self.get_logger().info(f"Reliability: {qos_profile.reliability}")
+            self.get_logger().info(f"Durability: {qos_profile.durability}")
+            self.get_logger().info(f"History: {qos_profile.history}")
+            self.get_logger().info(f"Depth: {qos_profile.depth}")
 
         # Internal state tracking
         self.isArmed = False
@@ -33,6 +35,7 @@ class VehicleGlobalPositionListener(Node):
         self.isOffboard = False
         self.arm_timestamp = None
         self.flight_start_timestamp = None
+        self.home_coord_offset = [0.0, 0.0, 0.0]
         self.initialization_counter = 0     # after detecting vehicle is in onboard mode, wait for 5 seconds before taking autonomous control
 
         # PX4 publishers
@@ -46,12 +49,15 @@ class VehicleGlobalPositionListener(Node):
         # PX4 subscribers
         self.vehicle_status = None
         self.vehicle_local_position = VehicleLocalPosition()
+        self.vehicle_odometry = None
         self.battery_status = None
         
         self.vehicle_status_subscriber = self.create_subscription( 
             VehicleStatus, '/fmu/out/vehicle_status', self.vehicle_status_callback, qos_profile)
         self.vehicle_local_position_subscriber = self.create_subscription(
             VehicleLocalPosition, '/fmu/out/vehicle_local_position', self.vehicle_local_position_callback, qos_profile)    
+        self.vehicle_odometry_subscriber = self.create_subscription(
+            VehicleOdometry, '/fmu/out/vehicle_odometry', self.vehicle_odometry_callback, qos_profile)
         self.battery_status_subscriber = self.create_subscription(
             BatteryStatus, '/fmu/out/battery_status', self.battery_status_callback, qos_profile)
         
@@ -175,16 +181,23 @@ class VehicleGlobalPositionListener(Node):
         # save the timestamp of the first time the vehicle is armed
         if self.isArmed:
             if self.arm_timestamp is None:
-                self.arm_timestamp = vehicle_status.armed_time
+                self.arm_timestamp = vehicle_status.timestamp
         else:
             self.arm_timestamp = None
             self.initialization_counter = 0
             
+        # save the timestamp and home coordinate offset
         if self.isFlying:
             if self.flight_start_timestamp is None:
-                self.flight_start_timestamp = vehicle_status.takeoff_time
+                self.flight_start_timestamp = vehicle_status.timestamp
+                self.home_coord_offset = [self.vehicle_local_position.x, self.vehicle_local_position.y, self.vehicle_local_position.z]
         else:
             self.flight_start_timestamp = None
+            
+    # https://docs.px4.io/main/en/msg_docs/VehicleOdometry.html
+    def vehicle_odometry_callback(self, msg):
+        """Callback function for vehicle_odometry topic subscriber."""
+        self.vehicle_odometry = msg
 
     # https://docs.px4.io/main/en/msg_docs/BatteryStatus.html
     def battery_status_callback(self, msg):
@@ -199,7 +212,7 @@ class VehicleGlobalPositionListener(Node):
         # Wait for vehicle status to be initialized
         if self.vehicle_status is None:
             return
-        
+                    
         # Wait for vehicle to be armed, flying, and in offboard mode
         if self.isArmed and self.isFlying and self.isOffboard:
             if self.initialization_counter >= 50:
@@ -208,31 +221,22 @@ class VehicleGlobalPositionListener(Node):
                 # move the vehicle half a meter to the right in the global, keeping the current yaw
                 
                 # get the position of the vehicle in NED (X North, Y East, Z Down) local frame
-                nedX, nedY, nedZ = self.vehicle_local_position.x, self.vehicle_local_position.y, self.vehicle_local_position.z
+                curr_pos = self.vehicle_local_position.x, self.vehicle_local_position.y, self.vehicle_local_position.z
                 yaw = self.vehicle_local_position.heading
                 
-                # translate it into FLU (X Forward, Y Left, Z Up) local frame
-                fluX, fluY, fluZ = nedY, -nedX, -nedZ                               #!!WRONG
-                fluY -= 0.5
-                
-                # convert the FLU back to NED
-                new_ned_X, new_ned_Y, new_ned_Z = -fluY, fluX, -fluZ                #!!WRONG
-                
-                # create the trajectory setpoint message
-                trajectory_setpoint = TrajectorySetpoint()
-                trajectory_setpoint.position = [new_ned_X, new_ned_Y, new_ned_Z]        #!!WRONG
-                trajectory_setpoint.yaw = yaw        
-                trajectory_setpoint.timestamp = int(self.get_clock().now().nanoseconds / 1000)
-                self.trajectory_setpoint_publisher.publish(trajectory_setpoint)
-                self.get_logger().info(f"Trajectory setpoint: {trajectory_setpoint}")
-                
-                
+                offset = self.ned_point_from_flu_offset(curr_pos, [1.0, 1.0, 0.0])
+                self.get_logger().info(f"Current position: {curr_pos}")
+                self.get_logger().info(f"Offset position: {offset}")
+                # self.publish_trajectory_setpoint(offset, yaw)
+                            
             else:
                 self.initialization_counter += 1
     
     def timer_debug_callback(self) -> None:
         if self.vehicle_status is None:
             return        
+
+        self.get_logger().info(f"Vehicle status: {self.vehicle_local_position}")  # used for development prints
         
         # Build the status report as a single multi-line string
         report = []
@@ -244,23 +248,23 @@ class VehicleGlobalPositionListener(Node):
         report.append(f"State: {arming_state}")
         
         if self.vehicle_status:
-          current_time = self.vehicle_status.timestamp
+            current_time = self.vehicle_status.timestamp
         else: 
             current_time = 0
         current_time_formatted = datetime.fromtimestamp(current_time / 1e6).strftime('%d/%m/%Y %H:%M:%S')
-        report.append(f"[s] Current time: {current_time}")
+        report.append(f"[s] Current time: {current_time_formatted}")
             
         if self.arm_timestamp:
             armed_duration = int(current_time - self.arm_timestamp) / 1e6  # Convert microseconds to seconds    
-            report.append(f"[s] Armed time: {int(current_time - self.arm_timestamp)}")
         else:
             armed_duration = 0
+        report.append(f"[s] Armed time: {armed_duration:.0f}")
         
         if self.flight_start_timestamp:            
             flight_duration = int(current_time - self.flight_start_timestamp) / 1e6  # Convert microseconds to seconds        
         else:
             flight_duration = 0
-        report.append(f"[s] Flight time: {self.flight_start_timestamp}")
+        report.append(f"[s] Flight time: {flight_duration:.0f}")
         
         # Arming/disarming reasons
         arm_disarm_reasons = {
@@ -369,8 +373,8 @@ class VehicleGlobalPositionListener(Node):
         report.append(f"{'Parameter':25} {'Value':>10} {'Uncertainty StdDev σ':>10}")
         report.append("-" * 45)
         report.append(f"{'[m] Terrain altitude':25} {self.vehicle_local_position.dist_bottom:>10.3f} {self.vehicle_local_position.dist_bottom_var:>10.3f}")
-        report.append(f"{'[m] Local NED X':25} {self.vehicle_local_position.x:>10.3f} {self.vehicle_local_position.eph:>10.3f}")
-        report.append(f"{'[m] Local NED Y':25} {self.vehicle_local_position.y:>10.3f} {self.vehicle_local_position.eph:>10.3f}")
+        report.append(f"{'[m] Local NED North':25} {self.vehicle_local_position.x:>10.3f} {self.vehicle_local_position.eph:>10.3f}")
+        report.append(f"{'[m] Local NED East':25} {self.vehicle_local_position.y:>10.3f} {self.vehicle_local_position.eph:>10.3f}")
         report.append(f"{'[m] Local NED Z':25} {self.vehicle_local_position.z:>10.3f} {self.vehicle_local_position.epv:>10.3f}")
         
         report.append("\nGlobal Position:")
@@ -382,33 +386,17 @@ class VehicleGlobalPositionListener(Node):
         report.append("\nVelocity Data:")
         report.append(f"{'Parameter':25} {'Value':>10} {'Uncertainty Std Dev σ':>10}")
         report.append("-" * 45)
-        report.append(f"{'[m/s] Local NED VX':25} {self.vehicle_local_position.vx:>10.3f} {self.vehicle_local_position.evh:>10.3f}")
-        report.append(f"{'[m/s] Local NED VY':25} {self.vehicle_local_position.vy:>10.3f} {self.vehicle_local_position.evh:>10.3f}")
+        report.append(f"{'[m/s] Local NED VNorth':25} {self.vehicle_local_position.vx:>10.3f} {self.vehicle_local_position.evh:>10.3f}")
+        report.append(f"{'[m/s] Local NED VEast':25} {self.vehicle_local_position.vy:>10.3f} {self.vehicle_local_position.evh:>10.3f}")
         report.append(f"{'[m/s] Local NED VZ':25} {self.vehicle_local_position.vz:>10.3f} {self.vehicle_local_position.evv:>10.3f}")
         
-        report.append(f"\n{'[deg] Global Heading':25} {self.vehicle_local_position.heading * 57.2958:>10.3f} {self.vehicle_local_position.heading_var * 57.2958:>10.3f}")
+        readable_heading = self.px4_yaw_to_heading(self.vehicle_local_position.heading)
+        report.append(f"\n{'[deg] Global Heading':25} {readable_heading:>10.3f} {self.vehicle_local_position.heading_var * 57.2958:>10.3f}")
         
         self.get_logger().info("\n".join(report))
 
     
     # -----
-        
-    def arm(self):
-        """Send an arm command to the vehicle."""
-        self.publish_vehicle_command(
-            VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=1.0)
-        self.get_logger().info('Arm command sent')
-
-    def disarm(self):
-        """Send a disarm command to the vehicle."""
-        self.publish_vehicle_command(
-            VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=0.0)
-        self.get_logger().info('Disarm command sent')
-        
-    def land(self):
-        """Switch to land mode."""
-        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
-        self.get_logger().info("Switching to land mode")
 
 
     def publish_offboard_control_heartbeat_signal(self):
@@ -440,6 +428,79 @@ class VehicleGlobalPositionListener(Node):
         msg.from_external = True
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.vehicle_command_publisher.publish(msg)
+        
+    def publish_trajectory_setpoint(self, position: list[float, float, float], yaw:float = None) -> None:
+        """Publish a trajectory setpoint in drone NED with home offset applied
+        Takes in a position list [x, y, z] in meters and a yaw in degrees as bearing"""
+        msg = TrajectorySetpoint()
+        msg.position = [position[0] - self.home_coord_offset[0], position[1] - self.home_coord_offset[1], position[2] - self.home_coord_offset[2]]
+        if yaw is not None:
+            msg.yaw = yaw * (math.pi / 180.0)  # Convert degrees to radians
+        else:
+            msg.yaw = self.vehicle_local_position.heading
+        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        self.trajectory_setpoint_publisher.publish(msg)
+        
+    # -----
+    
+    def heading_to_px4_yaw(self, heading: float) -> float:
+        """Convert a heading in degrees [0, 360) to a PX4 yaw in radians (-pi, pi]
+        Heading is in degrees, yaw is in radians"""
+        heading = heading % 360.0
+        if heading > 180.0:
+            heading = heading - 360.0
+        return heading * (math.pi / 180.0) # heading is backwards 
+    
+    def px4_yaw_to_heading(self, yaw: float) -> float:
+        """Convert a PX4 yaw in radians (-pi, pi] to a heading in degrees [0, 360)
+        Yaw is in radians, heading is in degrees"""
+        return (yaw * (180.0 / math.pi)) % 360.0
+    
+    # take in a local offset in meters and a yaw in degrees, convert to the NED frame, and return the NED coordinates
+    def ned_point_from_flu_offset(self, curr_ned_pos: list[float, float, float], offset_flu: list[float, float, float]) -> list[float, float, float]:
+        """Convert a local FLU offset in meters to NED coordinates
+        Returns the offset in NED, not the global NED"""
+        # convert yaw to radians
+        yaw_current = self.vehicle_local_position.heading    
+        
+        # convert the offset to rotated FLU
+        rotated_flu_x = offset_flu[0] * math.cos(yaw_current) + offset_flu[1] * math.sin(yaw_current)
+        rotated_flu_y = offset_flu[0] * math.sin(yaw_current) - offset_flu[1] * math.cos(yaw_current)
+        rotated_flu_z = offset_flu[2]
+        
+        # convert to NED coordinates
+        offset_ned = [rotated_flu_x, rotated_flu_y, -rotated_flu_z]  
+        return [curr_ned_pos[0] + offset_ned[0], curr_ned_pos[1] + offset_ned[1], curr_ned_pos[2] + offset_ned[2]]
+    
+    def check_terrain_safe(self, threshold=0.5) -> bool:
+        """Check if the terrain is clear
+        Threshold is the minimum distance to the terrain in meters
+        Returns true if the terrain is safe, false otherwise"""
+        if self.vehicle_local_position.dist_bottom > threshold and self.vehicle_local_position.dist_bottom_valid:
+            return True
+        else:
+            return False
+    
+    # -----
+                
+    def arm(self):
+        """Send an arm command to the vehicle."""
+        self.publish_vehicle_command(
+            VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=1.0)
+        self.get_logger().info('Arm command sent')
+
+    def disarm(self):
+        """Send a disarm command to the vehicle."""
+        self.publish_vehicle_command(
+            VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=0.0)
+        self.get_logger().info('Disarm command sent')
+        
+    def land(self):
+        """Switch to land mode."""
+        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+        self.get_logger().info("Switching to land mode")
+        
+    # -----
         
 
 def main(args=None) -> None:
