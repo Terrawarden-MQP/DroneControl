@@ -58,6 +58,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        # micro_ros_agent,
+        micro_ros_agent,
         vehicle_position_listener_node
     ])
