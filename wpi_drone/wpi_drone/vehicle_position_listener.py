@@ -35,8 +35,10 @@ class VehicleGlobalPositionListener(Node):
         self.isOffboard = False
         self.arm_timestamp = None
         self.flight_start_timestamp = None
-        self.home_coord_offset = [0.0, 0.0, 0.0]
         self.initialization_counter = 0     # after detecting vehicle is in onboard mode, wait for 5 seconds before taking autonomous control
+        self.home_coord_offset = [0.0, 0.0, 0.0]
+        self.last_traj_setpoint_msg = None        
+        self.status_var_temp = 0
 
         # PX4 publishers
         self.offboard_control_mode_publisher = self.create_publisher(   # heartbeat
@@ -65,7 +67,7 @@ class VehicleGlobalPositionListener(Node):
         self.timer = self.create_timer(0.1, self.timer_callback)
         
         if debug_printout:
-            self.timer_debug = self.create_timer(1.0, self.timer_debug_callback)
+            self.timer_debug = self.create_timer(2.0, self.timer_debug_callback)
 
     # https://docs.px4.io/main/en/msg_docs/VehicleLocalPosition.html
     #     px4_msgs.msg.VehicleLocalPosition(
@@ -216,18 +218,41 @@ class VehicleGlobalPositionListener(Node):
         # Wait for vehicle to be armed, flying, and in offboard mode
         if self.isArmed and self.isFlying and self.isOffboard:
             if self.initialization_counter >= 50:
-                self.get_logger().info("Vehicle is armed, flying, and in offboard mode")
+                if self.status_var_temp == 0:
+                    self.get_logger().info("Vehicle is armed, flying, and in offboard mode")
+                    self.status_var_temp = 1
+                    
+                elif self.status_var_temp == 1:
+                    # move the vehicle half a meter to the right in the global, keeping the current yaw
+                    # get the position of the vehicle in NED (X North, Y East, Z Down) local frame    
+                    self.get_logger().info(f"Current position: {self.get_current_ned_pos()}")                                     
+                    offset = self.ned_point_from_flu_offset(self.get_current_ned_pos(), [0.0, -1.0, 0.0])               
+                    self.publish_trajectory_setpoint(offset)
+                    self.status_var_temp = 2                    
+                    
+                elif self.status_var_temp == 2:                    
+                    # check if the vehicle is at the target position
+                    if self.is_at_traj_setpoint(0.05):
+                        self.get_logger().info("Vehicle is at target position")                    
+                        self.status_var_temp = 3
+                        
+                elif self.status_var_temp == 3:
+                    # go back
+                    self.get_logger().info(f"Current position: {self.get_current_ned_pos()}")
+                    offset = self.ned_point_from_flu_offset(self.get_current_ned_pos(), [0.0, 1.0, 0.0])
+                    self.publish_trajectory_setpoint(offset)
+                    self.status_var_temp = 4
+                    
+                elif self.status_var_temp == 4:
+                    # check if the vehicle is at the target position
+                    if self.is_at_traj_setpoint(0.05):
+                        self.get_logger().info("Vehicle is back at target position")                    
+                        self.status_var_temp = 5
+                        
+                elif self.status_var_temp == 5:
+                    self.get_logger().info("Vehicle is back at start position")
+                    self.status_var_temp = 6
                 
-                # move the vehicle half a meter to the right in the global, keeping the current yaw
-                
-                # get the position of the vehicle in NED (X North, Y East, Z Down) local frame
-                curr_pos = self.vehicle_local_position.x, self.vehicle_local_position.y, self.vehicle_local_position.z
-                yaw = self.vehicle_local_position.heading
-                
-                offset = self.ned_point_from_flu_offset(curr_pos, [1.0, 1.0, 0.0])
-                self.get_logger().info(f"Current position: {curr_pos}")
-                self.get_logger().info(f"Offset position: {offset}")
-                # self.publish_trajectory_setpoint(offset, yaw)
                             
             else:
                 self.initialization_counter += 1
@@ -236,7 +261,7 @@ class VehicleGlobalPositionListener(Node):
         if self.vehicle_status is None:
             return        
 
-        self.get_logger().info(f"Vehicle status: {self.vehicle_local_position}")  # used for development prints
+        # self.get_logger().info(f"Vehicle status: {self.vehicle_local_position}")  # used for development prints
         
         # Build the status report as a single multi-line string
         report = []
@@ -433,13 +458,15 @@ class VehicleGlobalPositionListener(Node):
         """Publish a trajectory setpoint in drone NED with home offset applied
         Takes in a position list [x, y, z] in meters and a yaw in degrees as bearing"""
         msg = TrajectorySetpoint()
-        msg.position = [position[0] - self.home_coord_offset[0], position[1] - self.home_coord_offset[1], position[2] - self.home_coord_offset[2]]
+        msg.position = [position[0] + self.home_coord_offset[0], position[1] + self.home_coord_offset[1], position[2] + self.home_coord_offset[2]]
         if yaw is not None:
             msg.yaw = yaw * (math.pi / 180.0)  # Convert degrees to radians
         else:
             msg.yaw = self.vehicle_local_position.heading
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
-        self.trajectory_setpoint_publisher.publish(msg)
+        self.last_traj_setpoint_msg = msg
+        self.get_logger().info(f"Trajectory setpoint: {msg.position}")
+        # self.trajectory_setpoint_publisher.publish(msg)
         
     # -----
     
@@ -480,6 +507,42 @@ class VehicleGlobalPositionListener(Node):
             return True
         else:
             return False
+        
+        
+    # !! TODO: needs checks with the home_coord_offset and the logic to make it work w/o having to add/subtract the offset all the time
+    def get_current_ned_pos(self) -> list[float, float, float]:
+        """Get the current position in NED coordinates
+        Returns the current position in NED coordinates"""
+        return [self.vehicle_local_position.x - self.home_coord_offset[0], self.vehicle_local_position.y - self.home_coord_offset[1], self.vehicle_local_position.z - self.home_coord_offset[2]]
+    
+    def get_traj_setpoint(self) -> list[float, float, float]:
+        """Get the trajectory setpoint in NED coordinates
+        Returns the trajectory setpoint in NED coordinates"""
+        if self.last_traj_setpoint_msg is None:
+            return None
+        return self.get_ned_pos(self.last_traj_setpoint_msg.position)
+    
+    def get_ned_pos(self, target: list[float, float, float]) -> list[float, float, float]:
+        """Get the position in NED coordinates
+        Returns the position in NED coordinates"""
+        return [target[0] - self.home_coord_offset[0], target[1] - self.home_coord_offset[1], target[2] - self.home_coord_offset[2]]
+    
+    def is_at_position(self, target: list[float, float, float], threshold=0.5) -> bool:
+        """Check if the vehicle is at a given position, threshold is in meters
+        Returns true if the vehicle is at the position, false otherwise"""
+        curr_pos = self.get_current_ned_pos()
+        if math.sqrt((curr_pos[0] - target[0])**2 + (curr_pos[1] - target[1])**2 + (curr_pos[2] - target[2])**2) < threshold:
+            return True
+        else:
+            return False
+        
+    def is_at_traj_setpoint(self, threshold=0.5) -> bool:
+        """Check if the vehicle is at the trajectory setpoint
+        Threshold is in meters
+        Returns true if the vehicle is at the trajectory setpoint, false otherwise"""
+        if self.last_traj_setpoint_msg is None:
+            return False
+        return self.is_at_position(self.get_traj_setpoint(), threshold)
     
     # -----
                 
