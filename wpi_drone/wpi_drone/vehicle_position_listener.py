@@ -3,7 +3,10 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from px4_msgs.msg import VehicleOdometry, OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition, VehicleStatus, BatteryStatus
+from geometry_msgs import PoseStamped
+from sensor_msgs.msg import NavSatFix
+from TerrawardenInterfaces.msg import DroneTelemetry
+from px4_msgs.msg import VehicleOdometry, OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition, VehicleStatus, BatteryStatus, SensorGps
 from datetime import datetime
 import math
 
@@ -53,6 +56,7 @@ class VehicleGlobalPositionListener(Node):
         self.vehicle_local_position = VehicleLocalPosition()
         self.vehicle_odometry = None
         self.battery_status = None
+        self.sensor_gps = None
         
         self.vehicle_status_subscriber = self.create_subscription( 
             VehicleStatus, '/fmu/out/vehicle_status', self.vehicle_status_callback, qos_profile)
@@ -62,9 +66,19 @@ class VehicleGlobalPositionListener(Node):
             VehicleOdometry, '/fmu/out/vehicle_odometry', self.vehicle_odometry_callback, qos_profile)
         self.battery_status_subscriber = self.create_subscription(
             BatteryStatus, '/fmu/out/battery_status', self.battery_status_callback, qos_profile)
+        self.sensor_gps_subscriber = self.create_subscription(
+            SensorGps, '/fmu/out/sensor_gps', self.sensor_gps_callback, qos_profile)
         
-        # Create a timer to publish control commands
-        self.timer = self.create_timer(0.1, self.timer_callback)
+        # ROS2 publishers
+        self.publish_drone_telemetry_publisher = self.create_publisher(
+            DroneTelemetry, '/drone_telemetry', 10)
+        self.telemetry_timer = self.create_timer(0.1, self.publish_drone_telemetry)  # 10Hz
+        
+        # ROS2 subscibers
+        
+
+        
+        self.heartbeat_timer = self.create_timer(0.1, self.timer_callback)
         
         if debug_printout:
             self.timer_debug = self.create_timer(2.0, self.timer_debug_callback)
@@ -226,20 +240,22 @@ class VehicleGlobalPositionListener(Node):
                     # move the vehicle half a meter to the right in the global, keeping the current yaw
                     # get the position of the vehicle in NED (X North, Y East, Z Down) local frame    
                     self.get_logger().info(f"Current position: {self.get_current_ned_pos()}")                                     
-                    offset = self.ned_point_from_flu_offset(self.get_current_ned_pos(), [0.0, -1.0, 0.0])               
+                    offset = self.ned_point_from_flu_offset(self.get_current_ned_pos(), [0.0, -2.0, 0.0])               
                     self.publish_trajectory_setpoint(offset)
                     self.status_var_temp = 2                    
                     
                 elif self.status_var_temp == 2:                    
                     # check if the vehicle is at the target position
                     if self.is_at_traj_setpoint(0.05):
-                        self.get_logger().info("Vehicle is at target position")                    
+                        self.get_logger().info("Vehicle is at target position")                                        
                         self.status_var_temp = 3
+                        # reset the time counter
+                        self.initialization_counter = 20
                         
                 elif self.status_var_temp == 3:
                     # go back
                     self.get_logger().info(f"Current position: {self.get_current_ned_pos()}")
-                    offset = self.ned_point_from_flu_offset(self.get_current_ned_pos(), [0.0, 1.0, 0.0])
+                    offset = self.ned_point_from_flu_offset(self.get_current_ned_pos(), [0.0, 4.0, 0.0])
                     self.publish_trajectory_setpoint(offset)
                     self.status_var_temp = 4
                     
@@ -255,7 +271,13 @@ class VehicleGlobalPositionListener(Node):
                 
                             
             else:
-                self.initialization_counter += 1
+                self.initialization_counter += 1   
+                
+        
+    def SensorGpsCallback(self, msg):
+        """Callback function for sensor_gps topic subscriber."""
+        self.sensor_gps = msg
+        
     
     def timer_debug_callback(self) -> None:
         if self.vehicle_status is None:
@@ -466,7 +488,70 @@ class VehicleGlobalPositionListener(Node):
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.last_traj_setpoint_msg = msg
         self.get_logger().info(f"Trajectory setpoint: {msg.position}")
-        # self.trajectory_setpoint_publisher.publish(msg)
+        self.trajectory_setpoint_publisher.publish(msg)
+        
+    def publish_drone_telemetry(self) -> None:
+        """Publish the drone telemetry."""
+        msg = DroneTelemetry()
+             
+        # Position
+        pos = PoseStamped()
+        pos.pose.position.x = self.vehicle_local_position.x
+        pos.pose.position.y = self.vehicle_local_position.y
+        pos.pose.position.z = self.vehicle_local_position.z
+        pos.header.stamp = self.get_clock().now().to_msg()
+        msg.pos = pos
+        
+        # Velocity
+        vel = PoseStamped()
+        vel.pose.position.x = self.vehicle_local_position.vx
+        vel.pose.position.y = self.vehicle_local_position.vy
+        vel.pose.position.z = self.vehicle_local_position.vz
+        vel.header.stamp = self.get_clock().now().to_msg()
+        msg.vel = vel
+        
+        # TOOO: add GPS
+        
+        # Other
+        msg.is_flying = self.isFlying
+        msg.is_offboard = self.isOffboard
+        msg.altitude_above_ground = self.vehicle_local_position.dist_bottom
+        msg.heading_degrees = self.px4_yaw_to_heading(self.vehicle_local_position.heading)
+        msg.battery_percentage = self.battery_status.remaining * 100
+        # TODO: STATUS STRING
+        msg.error = "TODO: make the error messages"
+    
+        
+        # Convert PX4 sensor_gps to ROS2 NavSatFix
+        def convert_px4_gps_to_navsat(px4_gps):
+            navsat = NavSatFix()
+            
+            # Basic fields
+            navsat.latitude = px4_gps.lat * 1e-7  # PX4 uses degrees * 1e7
+            navsat.longitude = px4_gps.lon * 1e-7  # PX4 uses degrees * 1e7
+            navsat.altitude = px4_gps.alt * 1e-3   # PX4 uses mm, ROS uses meters
+            
+            # Covariance matrix (9 elements for 3x3 matrix)
+            # PX4 provides eph (horizontal position error) and epv (vertical position error)
+            # Convert from m^2 to standard deviation squared
+            navsat.position_covariance[0] = px4_gps.eph * px4_gps.eph  # xx
+            navsat.position_covariance[4] = px4_gps.eph * px4_gps.eph  # yy
+            navsat.position_covariance[8] = px4_gps.epv * px4_gps.epv  # zz
+            
+            # Cross-terms are set to 0 as PX4 doesn't provide correlation data
+            navsat.position_covariance[1] = 0.0  # xy
+            navsat.position_covariance[2] = 0.0  # xz
+            navsat.position_covariance[3] = 0.0  # yx
+            navsat.position_covariance[5] = 0.0  # yz
+            navsat.position_covariance[6] = 0.0  # zx
+            navsat.position_covariance[7] = 0.0  # zy
+            
+            # Set covariance type (diagonal known)
+            navsat.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+
+            return navsat
+        pass
+
         
     # -----
     
@@ -543,7 +628,6 @@ class VehicleGlobalPositionListener(Node):
         if self.last_traj_setpoint_msg is None:
             return False
         return self.is_at_position(self.get_traj_setpoint(), threshold)
-    
     # -----
                 
     def arm(self):
