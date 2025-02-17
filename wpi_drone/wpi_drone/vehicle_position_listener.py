@@ -3,9 +3,9 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from geometry_msgs import PoseStamped
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import NavSatFix
-from TerrawardenInterfaces.msg import DroneTelemetry
+from terrawarden_interfaces.msg import DroneTelemetry, DroneWaypoint
 from px4_msgs.msg import VehicleOdometry, OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition, VehicleStatus, BatteryStatus, SensorGps
 from datetime import datetime
 import math
@@ -75,6 +75,8 @@ class VehicleGlobalPositionListener(Node):
         self.telemetry_timer = self.create_timer(0.1, self.publish_drone_telemetry)  # 10Hz
         
         # ROS2 subscibers
+        self.waypoing_subscriber = self.create_subscription(
+            DroneWaypoint,  self.get_parameter('drone_pose_topic'), self.waypoint_callback, qos_profile)
         
 
         
@@ -211,6 +213,18 @@ class VehicleGlobalPositionListener(Node):
             self.flight_start_timestamp = None
             
     # https://docs.px4.io/main/en/msg_docs/VehicleOdometry.html
+    # timestamp=1739808861325580,
+    # timestamp_sample=1739808861324953,
+    # pose_frame=1,
+    # position=array([ 0.15550749, -0.02187049, -0.5224337 ], dtype=float32),
+    # q=array([-0.18065909, 0.00464101, 0.00498464, 0.9835222 ], dtype=float32),
+    # velocity_frame=1, velocity=array([ 4.5273470e-04, -3.4711199e-04, 7.1771887e-05], dtype=float32),
+    # angular_velocity=array([-0.00037794, -0.00055995, -0.00013416], dtype=float32),
+    # position_variance=array([0.0482139 , 0.04889397, 0.00182111], dtype=float32),
+    # orientation_variance=array([1.6147900e-05, 1.6462798e-05, 6.9236341e-03], dtype=float32),
+    # velocity_variance=array([0.00030635, 0.00030647, 0.00099156], dtype=float32),
+    # reset_counter=6,
+    # quality=0
     def vehicle_odometry_callback(self, msg):
         """Callback function for vehicle_odometry topic subscriber."""
         self.vehicle_odometry = msg
@@ -274,7 +288,7 @@ class VehicleGlobalPositionListener(Node):
                 self.initialization_counter += 1   
                 
         
-    def SensorGpsCallback(self, msg):
+    def sensor_gps_callback(self, msg):
         """Callback function for sensor_gps topic subscriber."""
         self.sensor_gps = msg
         
@@ -490,34 +504,50 @@ class VehicleGlobalPositionListener(Node):
         self.get_logger().info(f"Trajectory setpoint: {msg.position}")
         self.trajectory_setpoint_publisher.publish(msg)
         
+    def waypoint_callback(self, msg):
+        """Callback function for waypoint topic subscriber."""
+        self.get_logger().info(f"Waypoint: {msg}")
+        # publish the trajectory setpoint
+        # self.publish_trajectory_setpoint([msg.x, msg.y, msg.z], msg.yaw)
+        
     def publish_drone_telemetry(self) -> None:
         """Publish the drone telemetry."""
         msg = DroneTelemetry()
-             
-        # Position
-        pos = PoseStamped()
-        pos.pose.position.x = self.vehicle_local_position.x
-        pos.pose.position.y = self.vehicle_local_position.y
-        pos.pose.position.z = self.vehicle_local_position.z
-        pos.header.stamp = self.get_clock().now().to_msg()
-        msg.pos = pos
-        
-        # Velocity
-        vel = PoseStamped()
-        vel.pose.position.x = self.vehicle_local_position.vx
-        vel.pose.position.y = self.vehicle_local_position.vy
-        vel.pose.position.z = self.vehicle_local_position.vz
-        vel.header.stamp = self.get_clock().now().to_msg()
-        msg.vel = vel
-        
-        # TOOO: add GPS
+            
+        if self.vehicle_local_position:
+            # Position
+            pos = PoseStamped()
+            pos.pose.position.x = self.vehicle_local_position.x
+            pos.pose.position.y = self.vehicle_local_position.y
+            pos.pose.position.z = self.vehicle_local_position.z
+            if self.vehicle_odometry:
+                pos.pose.orientation.x = self.vehicle_odometry.q[0]
+                pos.pose.orientation.y = self.vehicle_odometry.q[1]
+                pos.pose.orientation.z = self.vehicle_odometry.q[2]
+                pos.pose.orientation.w = self.vehicle_odometry.q[3]
+            pos.header.stamp = self.get_clock().now().to_msg()
+            msg.pos = pos
+            
+            # Velocity
+            vel = PoseStamped()
+            vel.pose.position.x = self.vehicle_local_position.vx
+            vel.pose.position.y = self.vehicle_local_position.vy
+            vel.pose.position.z = self.vehicle_local_position.vz
+            vel.header.stamp = self.get_clock().now().to_msg()
+            msg.vel = vel
+            
+        # GPS
+        if self.sensor_gps:
+            msg.gps = convert_px4_gps_to_navsat(self.sensor_gps)
         
         # Other
         msg.is_flying = self.isFlying
         msg.is_offboard = self.isOffboard
-        msg.altitude_above_ground = self.vehicle_local_position.dist_bottom
-        msg.heading_degrees = self.px4_yaw_to_heading(self.vehicle_local_position.heading)
-        msg.battery_percentage = self.battery_status.remaining * 100
+        if self.vehicle_local_position:
+            msg.altitude_above_ground = self.vehicle_local_position.dist_bottom
+            msg.heading_degrees = self.px4_yaw_to_heading(self.vehicle_local_position.heading)
+        if self.battery_status:
+            msg.battery_percentage = self.battery_status.remaining * 100
         # TODO: STATUS STRING
         msg.error = "TODO: make the error messages"
     
@@ -525,11 +555,10 @@ class VehicleGlobalPositionListener(Node):
         # Convert PX4 sensor_gps to ROS2 NavSatFix
         def convert_px4_gps_to_navsat(px4_gps):
             navsat = NavSatFix()
-            
-            # Basic fields
-            navsat.latitude = px4_gps.lat * 1e-7  # PX4 uses degrees * 1e7
-            navsat.longitude = px4_gps.lon * 1e-7  # PX4 uses degrees * 1e7
-            navsat.altitude = px4_gps.alt * 1e-3   # PX4 uses mm, ROS uses meters
+                
+            navsat.latitude = px4_gps.latitude_deg * 1e-7  # PX4 uses degrees * 1e7
+            navsat.longitude = px4_gps.longitude_deg * 1e-7  # PX4 uses degrees * 1e7
+            navsat.altitude = px4_gps.altitude_ellipsoid_m
             
             # Covariance matrix (9 elements for 3x3 matrix)
             # PX4 provides eph (horizontal position error) and epv (vertical position error)
@@ -546,8 +575,11 @@ class VehicleGlobalPositionListener(Node):
             navsat.position_covariance[6] = 0.0  # zx
             navsat.position_covariance[7] = 0.0  # zy
             
-            # Set covariance type (diagonal known)
-            navsat.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+            # set to uint8 COVARIANCE_TYPE_UNKNOWN = 0 if no GPS, and uint8 COVARIANCE_TYPE_DIAGONAL_KNOWN = 2 if lock
+            if self.sensor_gps.fix_type >= 3:
+                navsat.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+            else:
+                navsat.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
 
             return navsat
         pass
@@ -592,9 +624,7 @@ class VehicleGlobalPositionListener(Node):
             return True
         else:
             return False
-        
-        
-    # !! TODO: needs checks with the home_coord_offset and the logic to make it work w/o having to add/subtract the offset all the time
+            
     def get_current_ned_pos(self) -> list[float, float, float]:
         """Get the current position in NED coordinates
         Returns the current position in NED coordinates"""
