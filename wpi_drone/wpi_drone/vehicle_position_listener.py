@@ -15,6 +15,14 @@ class VehicleGlobalPositionListener(Node):
     def __init__(self):
         super().__init__('vehicle_global_position_listener')
         
+        # Add debug parameters
+        self.declare_parameter('debug_printout', True)
+        self.declare_parameter('debug_printout_period_s', 2.0)
+        
+        # Add missing parameter declarations
+        self.declare_parameter('drone_pose_topic', 'drone/waypoint')
+        self.declare_parameter('drone_telemetry_topic', 'drone/telemetry')
+        
         # Configure QoS profile for PX4
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -24,7 +32,7 @@ class VehicleGlobalPositionListener(Node):
         )
         
         # Debug logging
-        debug_printout = True
+        debug_printout = self.get_parameter('debug_printout').value
         if debug_printout:
             self.get_logger().info("Starting subscriber with QoS profile:")
             self.get_logger().info(f"Reliability: {qos_profile.reliability}")
@@ -82,8 +90,9 @@ class VehicleGlobalPositionListener(Node):
         
         self.heartbeat_timer = self.create_timer(0.1, self.timer_callback)
         
-        if debug_printout:
-            self.timer_debug = self.create_timer(2.0, self.timer_debug_callback)
+        if self.get_parameter('debug_printout').value:
+            period = self.get_parameter('debug_printout_period_s').value
+            self.timer_debug = self.create_timer(period, self.timer_debug_callback)
 
     # https://docs.px4.io/main/en/msg_docs/VehicleLocalPosition.html
     #     px4_msgs.msg.VehicleLocalPosition(
@@ -245,7 +254,8 @@ class VehicleGlobalPositionListener(Node):
                     
         # Wait for vehicle to be armed, flying, and in offboard mode
         if self.isArmed and self.isFlying and self.isOffboard:
-            if self.initialization_counter >= 50:
+            # count to 3 seconds equivalent
+            if self.initialization_counter >= 30:
                 if self.status_var_temp == 0:
                     self.get_logger().info("Vehicle is armed, flying, and in offboard mode")
                     self.status_var_temp = 1
@@ -494,7 +504,7 @@ class VehicleGlobalPositionListener(Node):
         
     def waypoint_callback(self, msg):
         """Callback function for waypoint topic subscriber."""
-        self.get_logger().info(f"Waypoint: {msg}")            
+        self.get_logger().info(f"Waypoint received: {msg}")            
         
         # publish the trajectory setpoint
         # --JJ I am not proud of this line of code, but it works
@@ -596,7 +606,7 @@ class VehicleGlobalPositionListener(Node):
         return (yaw * (180.0 / math.pi)) % 360.0
     
     # take in a local offset in meters and a yaw in degrees, convert to the NED frame, and return the NED coordinates
-    def ned_point_flu_offset(self, curr_ned_pos: list[float, float, float], offset_flu: list[float, float, float]) -> list[float, float, float]:
+    def ned_point_from_flu_offset(self, curr_ned_pos: list[float, float, float], offset_flu: list[float, float, float]) -> list[float, float, float]:
         """Convert a local FLU offset in meters to NED coordinates
         Returns the offset in NED, not the global NED"""
         # convert yaw to radians
