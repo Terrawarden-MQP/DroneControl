@@ -40,7 +40,7 @@ class VehicleGlobalPositionListener(Node):
         self.flight_start_timestamp = None
         self.initialization_counter = 0     # after detecting vehicle is in onboard mode, wait for 5 seconds before taking autonomous control
         self.home_coord_offset = [0.0, 0.0, 0.0]
-        self.last_traj_setpoint_msg = None        
+        self.last_traj_setpoint_msg_PX4 = None        
         self.status_var_temp = 0
 
         # PX4 publishers
@@ -71,7 +71,7 @@ class VehicleGlobalPositionListener(Node):
         
         # ROS2 publishers
         self.publish_drone_telemetry_publisher = self.create_publisher(
-            DroneTelemetry, '/drone_telemetry', 10)
+            DroneTelemetry, self.get_parameter('drone_telemetry_topic'), 10)
         self.telemetry_timer = self.create_timer(0.1, self.publish_drone_telemetry)  # 10Hz
         
         # ROS2 subscibers
@@ -249,41 +249,7 @@ class VehicleGlobalPositionListener(Node):
                 if self.status_var_temp == 0:
                     self.get_logger().info("Vehicle is armed, flying, and in offboard mode")
                     self.status_var_temp = 1
-                    
-                elif self.status_var_temp == 1:
-                    # move the vehicle half a meter to the right in the global, keeping the current yaw
-                    # get the position of the vehicle in NED (X North, Y East, Z Down) local frame    
-                    self.get_logger().info(f"Current position: {self.get_current_ned_pos()}")                                     
-                    offset = self.ned_point_from_flu_offset(self.get_current_ned_pos(), [0.0, -2.0, 0.0])               
-                    self.publish_trajectory_setpoint(offset)
-                    self.status_var_temp = 2                    
-                    
-                elif self.status_var_temp == 2:                    
-                    # check if the vehicle is at the target position
-                    if self.is_at_traj_setpoint(0.05):
-                        self.get_logger().info("Vehicle is at target position")                                        
-                        self.status_var_temp = 3
-                        # reset the time counter
-                        self.initialization_counter = 20
-                        
-                elif self.status_var_temp == 3:
-                    # go back
-                    self.get_logger().info(f"Current position: {self.get_current_ned_pos()}")
-                    offset = self.ned_point_from_flu_offset(self.get_current_ned_pos(), [0.0, 4.0, 0.0])
-                    self.publish_trajectory_setpoint(offset)
-                    self.status_var_temp = 4
-                    
-                elif self.status_var_temp == 4:
-                    # check if the vehicle is at the target position
-                    if self.is_at_traj_setpoint(0.05):
-                        self.get_logger().info("Vehicle is back at target position")                    
-                        self.status_var_temp = 5
-                        
-                elif self.status_var_temp == 5:
-                    self.get_logger().info("Vehicle is back at start position")
-                    self.status_var_temp = 6
-                
-                            
+                                                   
             else:
                 self.initialization_counter += 1   
                 
@@ -490,25 +456,49 @@ class VehicleGlobalPositionListener(Node):
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.vehicle_command_publisher.publish(msg)
         
-    def publish_trajectory_setpoint(self, position: list[float, float, float], yaw:float = None) -> None:
+    def publish_trajectory_setpoint(self, position: list[float, float, float], heading_deg:float = None, max_ang_vel_deg_s:float = None, max_lin_vel_m_s:float = None, max_z_vel_m_s:float = None, max_lin_accel_m_s2:float = None) -> None:
         """Publish a trajectory setpoint in drone NED with home offset applied
-        Takes in a position list [x, y, z] in meters and a yaw in degrees as bearing"""
+        Takes in a position list [x, y, z] in meters and a yaw in degrees as bearing
+        Optional parameters for max angular velocity, linear velocity, z velocity, and linear acceleration
+        If any velocity parameter is <= 0, drone will hold current position
+        """
         msg = TrajectorySetpoint()
-        msg.position = [position[0] + self.home_coord_offset[0], position[1] + self.home_coord_offset[1], position[2] + self.home_coord_offset[2]]
-        if yaw is not None:
-            msg.yaw = yaw * (math.pi / 180.0)  # Convert degrees to radians
+
+        if (max_lin_vel_m_s is not None and max_lin_vel_m_s <= 0) or \
+           (max_z_vel_m_s is not None and max_z_vel_m_s <= 0) or \
+           (max_ang_vel_deg_s is not None and max_ang_vel_deg_s <= 0):
+            
+            position= self.get_current_ned_pos()
+            self.get_logger().warn("Invalid velocity parameters detected - holding position")
+
+        msg.position = self.convert_to_PX4_ned_coordinates(position)
+            
+        if heading_deg is not None:
+            msg.yaw = heading_deg * (math.pi / 180.0)  # Convert degrees to radians
         else:
             msg.yaw = self.vehicle_local_position.heading
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
-        self.last_traj_setpoint_msg = msg
+        
+        if max_ang_vel_deg_s:
+            msg.yawspeed = max_ang_vel_deg_s * (math.pi / 180.0)
+            
+        if max_lin_vel_m_s and max_z_vel_m_s:
+            msg.velocity = [max_lin_vel_m_s, max_lin_vel_m_s, max_z_vel_m_s]
+            
+        if max_lin_accel_m_s2:
+            msg.acceleration = [max_lin_accel_m_s2, max_lin_accel_m_s2, max_lin_accel_m_s2]      
+        
+        self.last_traj_setpoint_msg_PX4 = msg
         self.get_logger().info(f"Trajectory setpoint: {msg.position}")
         self.trajectory_setpoint_publisher.publish(msg)
         
     def waypoint_callback(self, msg):
         """Callback function for waypoint topic subscriber."""
-        self.get_logger().info(f"Waypoint: {msg}")
+        self.get_logger().info(f"Waypoint: {msg}")            
+        
         # publish the trajectory setpoint
-        # self.publish_trajectory_setpoint([msg.x, msg.y, msg.z], msg.yaw)
+        # --JJ I am not proud of this line of code, but it works
+        self.publish_trajectory_setpoint([msg.ned_pos.x, msg.ned_pos.y, msg.ned_pos.z], msg.yaw, msg.max_ang_vel_deg_s, msg.max_lin_vel_m_s, msg.max_z_vel_m_s, msg.max_lin_accel_m_s2)
         
     def publish_drone_telemetry(self) -> None:
         """Publish the drone telemetry."""
@@ -548,8 +538,13 @@ class VehicleGlobalPositionListener(Node):
             msg.heading_degrees = self.px4_yaw_to_heading(self.vehicle_local_position.heading)
         if self.battery_status:
             msg.battery_percentage = self.battery_status.remaining * 100
-        # TODO: STATUS STRING
-        msg.error = "TODO: make the error messages"
+                           
+        # battery low
+        if self.battery_status:
+            if self.battery_status.warning > 0:
+                msg.error = "Battery low"
+        else:
+            msg.error = "TODO: make the error messages 📎"
     
         
         # Convert PX4 sensor_gps to ROS2 NavSatFix
@@ -601,7 +596,7 @@ class VehicleGlobalPositionListener(Node):
         return (yaw * (180.0 / math.pi)) % 360.0
     
     # take in a local offset in meters and a yaw in degrees, convert to the NED frame, and return the NED coordinates
-    def ned_point_from_flu_offset(self, curr_ned_pos: list[float, float, float], offset_flu: list[float, float, float]) -> list[float, float, float]:
+    def ned_point_flu_offset(self, curr_ned_pos: list[float, float, float], offset_flu: list[float, float, float]) -> list[float, float, float]:
         """Convert a local FLU offset in meters to NED coordinates
         Returns the offset in NED, not the global NED"""
         # convert yaw to radians
@@ -626,19 +621,24 @@ class VehicleGlobalPositionListener(Node):
             return False
             
     def get_current_ned_pos(self) -> list[float, float, float]:
-        """Get the current position in NED coordinates
-        Returns the current position in NED coordinates"""
+        """Get the current position in NED coordinates"""
+        # autonatically offsets from the PX4 internal tracking system
         return [self.vehicle_local_position.x - self.home_coord_offset[0], self.vehicle_local_position.y - self.home_coord_offset[1], self.vehicle_local_position.z - self.home_coord_offset[2]]
     
     def get_traj_setpoint(self) -> list[float, float, float]:
         """Get the trajectory setpoint in NED coordinates
         Returns the trajectory setpoint in NED coordinates"""
-        if self.last_traj_setpoint_msg is None:
+        if self.last_traj_setpoint_msg_PX4 is None:
             return None
-        return self.get_ned_pos(self.last_traj_setpoint_msg.position)
+        return self.convert_from_PX4_ned_coordinates(self.last_traj_setpoint_msg_PX4.position)
     
-    def get_ned_pos(self, target: list[float, float, float]) -> list[float, float, float]:
+    def convert_to_PX4_ned_coordinates(self, target: list[float, float, float]) -> list[float, float, float]:
         """Get the position in NED coordinates
+        Returns the position in PX4 NED coordinates"""
+        return [target[0] + self.home_coord_offset[0], target[1] + self.home_coord_offset[1], target[2] + self.home_coord_offset[2]]
+    
+    def convert_from_PX4_ned_coordinates(self, target: list[float, float, float]) -> list[float, float, float]:
+        """Get the position in PX4 NED coordinates
         Returns the position in NED coordinates"""
         return [target[0] - self.home_coord_offset[0], target[1] - self.home_coord_offset[1], target[2] - self.home_coord_offset[2]]
     
@@ -655,7 +655,7 @@ class VehicleGlobalPositionListener(Node):
         """Check if the vehicle is at the trajectory setpoint
         Threshold is in meters
         Returns true if the vehicle is at the trajectory setpoint, false otherwise"""
-        if self.last_traj_setpoint_msg is None:
+        if self.last_traj_setpoint_msg_PX4 is None:
             return False
         return self.is_at_position(self.get_traj_setpoint(), threshold)
     # -----
