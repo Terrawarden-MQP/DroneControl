@@ -508,7 +508,7 @@ class VehicleGlobalPositionListener(Node):
         
         # publish the trajectory setpoint
         # --JJ I am not proud of this line of code, but it works
-        self.publish_trajectory_setpoint([msg.ned_pos.x, msg.ned_pos.y, msg.ned_pos.z], msg.yaw, msg.max_ang_vel_deg_s, msg.max_lin_vel_m_s, msg.max_z_vel_m_s, msg.max_lin_accel_m_s2)
+        self.publish_trajectory_setpoint([msg.ned_pos.x, msg.ned_pos.y, msg.ned_pos.z], msg.heading_degrees, msg.max_ang_vel_deg_s, msg.max_lin_vel_m_s, msg.max_z_vel_m_s, msg.max_lin_accel_m_s2)
         
     def publish_drone_telemetry(self) -> None:
         """Publish the drone telemetry."""
