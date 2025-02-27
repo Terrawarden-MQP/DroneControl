@@ -38,26 +38,45 @@ Example to launch a sensor_combined listener node.
 
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import ExecuteProcess
+from launch.actions import ExecuteProcess, DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
+    # Declare launch arguments
+    XRCE_agent = DeclareLaunchArgument(
+        'XRCE_agent',
+        default_value='true',
+        description='Start microROS agent'
+    )
 
+    drone_telemetry_debug = DeclareLaunchArgument(
+        'drone_telemetry_debug',
+        default_value='false',
+        description='Enable drone telemetry debug prints'
+    )
+
+    # Create the microROS agent process
     micro_ros_agent = ExecuteProcess(
-        cmd=[[
-            'MicroXRCEAgent udp4 --port 8888 -v '
-        ]],
+        condition=LaunchConfiguration('XRCE_agent'),
+        cmd=['MicroXRCEAgent udp4 --port 8888 -v'],
         shell=True
     )
 
+    # Create the vehicle position listener node
     vehicle_position_listener_node = Node(
         package='wpi_drone',
         executable='vehicle_position_listener',
         name='vehicle_position_listener',
         output='screen',
         shell=True,
+        parameters=[{
+            'drone_telemetry_debug': LaunchConfiguration('drone_telemetry_debug')
+        }]
     )
 
     return LaunchDescription([
+        XRCE_agent,
+        drone_telemetry_debug,
         micro_ros_agent,
         vehicle_position_listener_node
     ])

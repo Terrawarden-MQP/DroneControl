@@ -18,6 +18,7 @@ class VehicleGlobalPositionListener(Node):
         # Add debug parameters
         self.declare_parameter('debug_printout', True)
         self.declare_parameter('debug_printout_period_s', 2.0)
+        self.declare_parameter('drone_telemetry_debug', False)
         
         # Add missing parameter declarations
         self.declare_parameter('drone_pose_topic', 'drone/waypoint')
@@ -93,6 +94,10 @@ class VehicleGlobalPositionListener(Node):
         if self.get_parameter('debug_printout').value:
             period = self.get_parameter('debug_printout_period_s').value
             self.timer_debug = self.create_timer(period, self.timer_debug_callback)
+        
+        # Set up telemetry debug timer if enabled
+        if self.get_parameter('drone_telemetry_debug').value:
+            self.telemetry_debug_timer = self.create_timer(1.0, self.telemetry_debug_callback)
 
     # https://docs.px4.io/main/en/msg_docs/VehicleLocalPosition.html
     #     px4_msgs.msg.VehicleLocalPosition(
@@ -473,16 +478,7 @@ class VehicleGlobalPositionListener(Node):
         If any velocity parameter is <= 0, drone will hold current position
         """
         msg = TrajectorySetpoint()
-
-        if (max_lin_vel_m_s is not None and max_lin_vel_m_s <= 0) or \
-           (max_z_vel_m_s is not None and max_z_vel_m_s <= 0) or \
-           (max_ang_vel_deg_s is not None and max_ang_vel_deg_s <= 0):
-            
-            position= self.get_current_ned_pos()
-            self.get_logger().warn("Invalid velocity parameters detected - holding position")
-
-        msg.position = self.convert_to_PX4_ned_coordinates(position)
-            
+        msg.position = [position[0] + self.home_coord_offset[0], position[1] + self.home_coord_offset[1], position[2] + self.home_coord_offset[2]]
         if heading_deg is not None:
             msg.yaw = heading_deg * (math.pi / 180.0)  # Convert degrees to radians
         else:
