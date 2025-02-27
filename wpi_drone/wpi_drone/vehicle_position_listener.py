@@ -18,7 +18,6 @@ class VehicleGlobalPositionListener(Node):
         # Add debug parameters
         self.declare_parameter('debug_printout', True)
         self.declare_parameter('debug_printout_period_s', 2.0)
-        self.declare_parameter('drone_telemetry_debug', False)
         
         # Add missing parameter declarations
         self.declare_parameter('drone_pose_topic', 'drone/waypoint')
@@ -94,10 +93,6 @@ class VehicleGlobalPositionListener(Node):
         if self.get_parameter('debug_printout').value:
             period = self.get_parameter('debug_printout_period_s').value
             self.timer_debug = self.create_timer(period, self.timer_debug_callback)
-        
-        # Set up telemetry debug timer if enabled
-        if self.get_parameter('drone_telemetry_debug').value:
-            self.telemetry_debug_timer = self.create_timer(1.0, self.telemetry_debug_callback)
 
     # https://docs.px4.io/main/en/msg_docs/VehicleLocalPosition.html
     #     px4_msgs.msg.VehicleLocalPosition(
@@ -694,7 +689,7 @@ def main(args=None) -> None:
     
     vehicle_global_position_listener.destroy_node()
     rclpy.shutdown()
-
+y
 
 if __name__ == '__main__':
     try:

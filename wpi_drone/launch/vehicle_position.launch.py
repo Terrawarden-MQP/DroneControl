@@ -43,16 +43,36 @@ from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
     # Declare launch arguments
+    # Debug parameters
+    debug_printout = DeclareLaunchArgument(
+        'debug_printout',
+        default_value='true',
+        description='Enable telemetry debug printouts'
+    )
+    
+    debug_printout_period_s = DeclareLaunchArgument(
+        'debug_printout_period_s',
+        default_value='2.0',
+        description='Debug printout period in seconds'
+    )
+
+    # Topic parameters
+    drone_pose_topic = DeclareLaunchArgument(
+        'drone_pose_topic',
+        default_value='drone/waypoint',
+        description='Topic for sending waypoints to drone'
+    )
+
+    drone_telemetry_topic = DeclareLaunchArgument(
+        'drone_telemetry_topic',
+        default_value='drone/telemetry',
+        description='Topic for receiving drone telemetry'
+    )
+
     XRCE_agent = DeclareLaunchArgument(
         'XRCE_agent',
         default_value='true',
         description='Start microROS agent'
-    )
-
-    drone_telemetry_debug = DeclareLaunchArgument(
-        'drone_telemetry_debug',
-        default_value='false',
-        description='Enable drone telemetry debug prints'
     )
 
     # Create the microROS agent process
@@ -62,7 +82,7 @@ def generate_launch_description():
         shell=True
     )
 
-    # Create the vehicle position listener node
+    # Create the vehicle position listener node with all parameters
     vehicle_position_listener_node = Node(
         package='wpi_drone',
         executable='vehicle_position_listener',
@@ -70,13 +90,25 @@ def generate_launch_description():
         output='screen',
         shell=True,
         parameters=[{
-            'drone_telemetry_debug': LaunchConfiguration('drone_telemetry_debug')
+            'debug_printout': LaunchConfiguration('debug_printout'),
+            'debug_printout_period_s': LaunchConfiguration('debug_printout_period_s'),
+            'drone_telemetry_debug': LaunchConfiguration('drone_telemetry_debug'),
+            'drone_pose_topic': LaunchConfiguration('drone_pose_topic'),
+            'drone_telemetry_topic': LaunchConfiguration('drone_telemetry_topic')
         }]
     )
 
     return LaunchDescription([
-        XRCE_agent,
+        # Debug parameters
+        debug_printout,
+        debug_printout_period_s,
         drone_telemetry_debug,
+        # Topic parameters
+        drone_pose_topic,
+        drone_telemetry_topic,
+        # XRCE agent
+        XRCE_agent,
+        # Nodes
         micro_ros_agent,
         vehicle_position_listener_node
     ])
