@@ -78,13 +78,13 @@ class VehicleGlobalPositionListener(Node):
             SensorGps, '/fmu/out/sensor_gps', self.sensor_gps_callback, qos_profile)
         
         # ROS2 publishers
-        self.publish_drone_telemetry_publisher = self.create_publisher(
-            DroneTelemetry, self.get_parameter('drone_telemetry_topic'), 10)
-        self.telemetry_timer = self.create_timer(0.1, self.publish_drone_telemetry)  # 10Hz
+        self.ROS2_publish_drone_telemetry_publisher = self.create_publisher(
+            DroneTelemetry, self.get_parameter('drone_telemetry_topic').value, 10)
+        self.telemetry_timer = self.create_timer(0.1, self.ROS2_publish_drone_telemetry)  # 10Hz
         
         # ROS2 subscibers
-        self.waypoing_subscriber = self.create_subscription(
-            DroneWaypoint,  self.get_parameter('drone_pose_topic'), self.waypoint_callback, qos_profile)
+        self.ROS2_waypoint_subscriber = self.create_subscription(
+            DroneWaypoint,  self.get_parameter('drone_pose_topic').value, self.ROS2_waypoint_callback, qos_profile)
         
 
         
@@ -493,7 +493,7 @@ class VehicleGlobalPositionListener(Node):
         self.get_logger().info(f"Trajectory setpoint: {msg.position}")
         self.trajectory_setpoint_publisher.publish(msg)
         
-    def waypoint_callback(self, msg):
+    def ROS2_waypoint_callback(self, msg):
         """Callback function for waypoint topic subscriber."""
         self.get_logger().info(f"Waypoint received: {msg}")            
         
@@ -501,7 +501,7 @@ class VehicleGlobalPositionListener(Node):
         # --JJ I am not proud of this line of code, but it works
         self.publish_trajectory_setpoint([msg.ned_pos.x, msg.ned_pos.y, msg.ned_pos.z], msg.heading_degrees, msg.max_ang_vel_deg_s, msg.max_lin_vel_m_s, msg.max_z_vel_m_s, msg.max_lin_accel_m_s2)
         
-    def publish_drone_telemetry(self) -> None:
+    def ROS2_publish_drone_telemetry(self) -> None:
         """Publish the drone telemetry."""
         msg = DroneTelemetry()
             
@@ -512,10 +512,10 @@ class VehicleGlobalPositionListener(Node):
             pos.pose.position.y = self.vehicle_local_position.y
             pos.pose.position.z = self.vehicle_local_position.z
             if self.vehicle_odometry:
-                pos.pose.orientation.x = self.vehicle_odometry.q[0]
-                pos.pose.orientation.y = self.vehicle_odometry.q[1]
-                pos.pose.orientation.z = self.vehicle_odometry.q[2]
-                pos.pose.orientation.w = self.vehicle_odometry.q[3]
+                pos.pose.orientation.x = float(self.vehicle_odometry.q[0])
+                pos.pose.orientation.y = float(self.vehicle_odometry.q[1])
+                pos.pose.orientation.z = float(self.vehicle_odometry.q[2])
+                pos.pose.orientation.w = float(self.vehicle_odometry.q[3])
             pos.header.stamp = self.get_clock().now().to_msg()
             msg.pos = pos
             
@@ -578,7 +578,8 @@ class VehicleGlobalPositionListener(Node):
                 navsat.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
 
             return navsat
-        pass
+        
+        self.ROS2_publish_drone_telemetry_publisher.publish(msg)
 
         
     # -----
@@ -689,7 +690,7 @@ def main(args=None) -> None:
     
     vehicle_global_position_listener.destroy_node()
     rclpy.shutdown()
-y
+
 
 if __name__ == '__main__':
     try:

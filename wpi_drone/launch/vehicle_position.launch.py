@@ -42,48 +42,56 @@ from launch.actions import ExecuteProcess, DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
+    components = []
     # Declare launch arguments
     # Debug parameters
-    debug_printout = DeclareLaunchArgument(
+    components.append(
+        DeclareLaunchArgument(
         'debug_printout',
         default_value='true',
         description='Enable telemetry debug printouts'
-    )
+    ))
     
-    debug_printout_period_s = DeclareLaunchArgument(
+    components.append(
+        DeclareLaunchArgument(
         'debug_printout_period_s',
         default_value='2.0',
         description='Debug printout period in seconds'
-    )
+    ))
 
     # Topic parameters
-    drone_pose_topic = DeclareLaunchArgument(
+    components.append(
+        DeclareLaunchArgument(
         'drone_pose_topic',
         default_value='drone/waypoint',
         description='Topic for sending waypoints to drone'
-    )
+    ))
 
-    drone_telemetry_topic = DeclareLaunchArgument(
+    components.append(
+        DeclareLaunchArgument(
         'drone_telemetry_topic',
         default_value='drone/telemetry',
         description='Topic for receiving drone telemetry'
-    )
+    ))
 
-    XRCE_agent = DeclareLaunchArgument(
+    components.append(DeclareLaunchArgument(
         'XRCE_agent',
         default_value='true',
         description='Start microROS agent'
-    )
+    ))
 
-    # Create the microROS agent process
-    micro_ros_agent = ExecuteProcess(
-        condition=LaunchConfiguration('XRCE_agent'),
-        cmd=['MicroXRCEAgent udp4 --port 8888 -v'],
-        shell=True
-    )
+
+    if LaunchConfiguration('XRCE_agent'):
+        # Create the microROS agent process
+        components.append(
+            ExecuteProcess(
+            cmd=['MicroXRCEAgent udp4 --port 8888 -v'],
+            shell=True
+        ))
 
     # Create the vehicle position listener node with all parameters
-    vehicle_position_listener_node = Node(
+    components.append(
+        Node(
         package='wpi_drone',
         executable='vehicle_position_listener',
         name='vehicle_position_listener',
@@ -92,23 +100,9 @@ def generate_launch_description():
         parameters=[{
             'debug_printout': LaunchConfiguration('debug_printout'),
             'debug_printout_period_s': LaunchConfiguration('debug_printout_period_s'),
-            'drone_telemetry_debug': LaunchConfiguration('drone_telemetry_debug'),
             'drone_pose_topic': LaunchConfiguration('drone_pose_topic'),
             'drone_telemetry_topic': LaunchConfiguration('drone_telemetry_topic')
         }]
-    )
+    ))
 
-    return LaunchDescription([
-        # Debug parameters
-        debug_printout,
-        debug_printout_period_s,
-        drone_telemetry_debug,
-        # Topic parameters
-        drone_pose_topic,
-        drone_telemetry_topic,
-        # XRCE agent
-        XRCE_agent,
-        # Nodes
-        micro_ros_agent,
-        vehicle_position_listener_node
-    ])
+    return LaunchDescription(components)
