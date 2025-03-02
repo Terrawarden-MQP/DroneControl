@@ -466,14 +466,14 @@ class VehicleGlobalPositionListener(Node):
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.vehicle_command_publisher.publish(msg)
         
-    def publish_trajectory_setpoint(self, position: list[float, float, float], heading_deg:float = None, max_ang_vel_deg_s:float = None, max_lin_vel_m_s:float = None, max_z_vel_m_s:float = None, max_lin_accel_m_s2:float = None) -> None:
+    def publish_trajectory_setpoint(self, position_NED: list[float, float, float], heading_deg:float = None, max_ang_vel_deg_s:float = None, max_lin_vel_m_s:float = None, max_z_vel_m_s:float = None, max_lin_accel_m_s2:float = None) -> None:
         """Publish a trajectory setpoint in drone NED with home offset applied
         Takes in a position list [x, y, z] in meters and a yaw in degrees as bearing
         Optional parameters for max angular velocity, linear velocity, z velocity, and linear acceleration
         If any velocity parameter is <= 0, drone will hold current position
         """
         msg = TrajectorySetpoint()
-        msg.position = [position[0] + self.home_coord_offset[0], position[1] + self.home_coord_offset[1], position[2] + self.home_coord_offset[2]]
+        msg.position = [position_NED[0] + self.home_coord_offset[0], position_NED[1] + self.home_coord_offset[1], position_NED[2] + self.home_coord_offset[2]]
         if heading_deg is not None:
             msg.yaw = heading_deg * (math.pi / 180.0)  # Convert degrees to radians
         else:
@@ -511,7 +511,7 @@ class VehicleGlobalPositionListener(Node):
             pos.pose.position.x = self.vehicle_local_position.x
             pos.pose.position.y = self.vehicle_local_position.y
             pos.pose.position.z = self.vehicle_local_position.z
-            if self.vehicle_odometry:
+            if self.vehicle_odometry:   # !!! Quaternion here is FRD frame to NED frame rotation
                 pos.pose.orientation.x = float(self.vehicle_odometry.q[0])
                 pos.pose.orientation.y = float(self.vehicle_odometry.q[1])
                 pos.pose.orientation.z = float(self.vehicle_odometry.q[2])
@@ -541,9 +541,13 @@ class VehicleGlobalPositionListener(Node):
             msg.battery_percentage = self.battery_status.remaining * 100
                            
         # battery low
+        msg.error = ""
         if self.battery_status:
             if self.battery_status.warning > 0:
-                msg.error = "Battery low"
+                msg.error += " Battery Low "
+        if self.check_terrain_safe() == False:
+            msg.error += " Ground Proximity Warning "
+        
         else:
             msg.error = "TODO: make the error messages 📎"
     
@@ -613,7 +617,7 @@ class VehicleGlobalPositionListener(Node):
         offset_ned = [rotated_flu_x, rotated_flu_y, -rotated_flu_z]  
         return [curr_ned_pos[0] + offset_ned[0], curr_ned_pos[1] + offset_ned[1], curr_ned_pos[2] + offset_ned[2]]
     
-    def check_terrain_safe(self, threshold=0.5) -> bool:
+    def check_terrain_safe(self, threshold=0.4) -> bool:
         """Check if the terrain is clear
         Threshold is the minimum distance to the terrain in meters
         Returns true if the terrain is safe, false otherwise"""
@@ -660,6 +664,7 @@ class VehicleGlobalPositionListener(Node):
         if self.last_traj_setpoint_msg_PX4 is None:
             return False
         return self.is_at_position(self.get_traj_setpoint(), threshold)
+    
     # -----
                 
     def arm(self):
