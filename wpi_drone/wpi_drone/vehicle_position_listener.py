@@ -80,7 +80,7 @@ class VehicleGlobalPositionListener(Node):
         # ROS2 publishers
         self.ROS2_publish_drone_telemetry_publisher = self.create_publisher(
             DroneTelemetry, self.get_parameter('drone_telemetry_topic').value, 10)
-        self.telemetry_timer = self.create_timer(0.05, self.ROS2_publish_drone_telemetry)  # 20Hz
+        self.telemetry_timer = self.create_timer(0.1, self.ROS2_publish_drone_telemetry)  # 10Hz
         
         # ROS2 subscibers
         self.ROS2_waypoint_subscriber = self.create_subscription(
