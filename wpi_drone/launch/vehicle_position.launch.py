@@ -63,7 +63,7 @@ def generate_launch_description():
     components.append(
         DeclareLaunchArgument(
         'drone_pose_topic',
-        default_value='drone/waypoint',
+        default_value='joisie_target_pose',
         description='Topic for sending waypoints to drone'
     ))
 
