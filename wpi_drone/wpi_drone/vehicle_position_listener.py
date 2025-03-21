@@ -25,8 +25,8 @@ class VehicleGlobalPositionListener(Node):
         
         # Configure QoS profile for PX4
         qos_profile = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,  # maybe TRANSIENT_LOCAL
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=5
         )
@@ -87,7 +87,6 @@ class VehicleGlobalPositionListener(Node):
             DroneWaypoint,  self.get_parameter('drone_pose_topic').value, self.ROS2_waypoint_callback, qos_profile)
         
 
-        
         self.heartbeat_timer = self.create_timer(0.1, self.timer_callback)
         
         if self.get_parameter('debug_printout').value:
@@ -433,8 +432,8 @@ class VehicleGlobalPositionListener(Node):
         self.get_logger().info("\n".join(report))
 
     
-    # -----
-
+    
+    # ----- ROS2 functions
 
     def publish_offboard_control_heartbeat_signal(self):
         """Publish the offboard control mode."""
@@ -586,7 +585,8 @@ class VehicleGlobalPositionListener(Node):
         self.ROS2_publish_drone_telemetry_publisher.publish(msg)
 
         
-    # -----
+        
+    # ----- PX4 functions
     
     def heading_to_px4_yaw(self, heading: float) -> float:
         """Convert a heading in degrees [0, 360) to a PX4 yaw in radians (-pi, pi]
@@ -665,7 +665,8 @@ class VehicleGlobalPositionListener(Node):
             return False
         return self.is_at_position(self.get_traj_setpoint(), threshold)
     
-    # -----
+    
+    # ----- PX4 commands, not used for safety
                 
     def arm(self):
         """Send an arm command to the vehicle."""
@@ -683,6 +684,7 @@ class VehicleGlobalPositionListener(Node):
         """Switch to land mode."""
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
         self.get_logger().info("Switching to land mode")
+        
         
     # -----
         
