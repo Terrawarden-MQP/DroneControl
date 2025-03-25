@@ -25,7 +25,7 @@ class VehicleGlobalPositionListener(Node):
         
         # Configure QoS profile for PX4
         qos_profile = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=5
@@ -255,16 +255,16 @@ class VehicleGlobalPositionListener(Node):
         if self.vehicle_status is None:
             return
                     
-        # Wait for vehicle to be armed, flying, and in offboard mode
-        if self.isArmed and self.isFlying and self.isOffboard:
-            # count to 3 seconds equivalent
-            if self.initialization_counter >= 30:
-                if self.status_var_temp == 0:
-                    self.get_logger().info("Vehicle is armed, flying, and in offboard mode")
-                    self.status_var_temp = 1
+        # # Wait for vehicle to be armed, flying, and in offboard mode
+        # if self.isArmed and self.isFlying and self.isOffboard:
+        #     # count to 3 seconds equivalent
+        #     if self.initialization_counter >= 30:
+        #         if self.status_var_temp == 0:
+        #             self.get_logger().info("Vehicle is armed, flying, and in offboard mode")
+        #             self.status_var_temp = 1
                                                    
-            else:
-                self.initialization_counter += 1                   
+        #     else:
+        #         self.initialization_counter += 1                   
         
     def sensor_gps_callback(self, msg):
         """Callback function for sensor_gps topic subscriber."""
@@ -273,7 +273,7 @@ class VehicleGlobalPositionListener(Node):
     def input_rc_callback(self, msg):
         """Callback function for input_rc topic subscriber."""
         self.input_rc = msg
-        self.get_logger().info(f"Input RC: {msg}")  # used for development prints
+        self.get_logger().warn(f"Input RC: {msg}")  # used for development prints
         #TODO: MAKE THIS TAKE INTO ACCOUNT THE RC LINK
         if msg.rssi < 0.5:
             self.hasRCLink = False
