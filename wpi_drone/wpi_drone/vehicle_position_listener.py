@@ -6,7 +6,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import NavSatFix
 from terrawarden_interfaces.msg import DroneTelemetry, DroneWaypoint
-from px4_msgs.msg import VehicleOdometry, OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition, VehicleStatus, BatteryStatus, SensorGps
+from px4_msgs.msg import VehicleOdometry, OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition, VehicleStatus, BatteryStatus, SensorGps, InputRc
 from datetime import datetime
 import math
 
@@ -44,6 +44,7 @@ class VehicleGlobalPositionListener(Node):
         self.isArmed = False
         self.isFlying = False
         self.isOffboard = False
+        self.hasRCLink = True
         self.arm_timestamp = None
         self.flight_start_timestamp = None
         self.initialization_counter = 0     # after detecting vehicle is in onboard mode, wait for 5 seconds before taking autonomous control
@@ -65,6 +66,7 @@ class VehicleGlobalPositionListener(Node):
         self.vehicle_odometry = None
         self.battery_status = None
         self.sensor_gps = None
+        self.input_rc = None
         
         self.vehicle_status_subscriber = self.create_subscription( 
             VehicleStatus, '/fmu/out/vehicle_status', self.vehicle_status_callback, qos_profile)
@@ -76,6 +78,8 @@ class VehicleGlobalPositionListener(Node):
             BatteryStatus, '/fmu/out/battery_status', self.battery_status_callback, qos_profile)
         self.sensor_gps_subscriber = self.create_subscription(
             SensorGps, '/fmu/out/sensor_gps', self.sensor_gps_callback, qos_profile)
+        self.input_rc_subscriber = self.create_subscription(
+            InputRc, '/fmu/out/input_rc', self.input_rc_callback, qos_profile)
         
         # ROS2 publishers
         self.ROS2_publish_drone_telemetry_publisher = self.create_publisher(
@@ -260,12 +264,21 @@ class VehicleGlobalPositionListener(Node):
                     self.status_var_temp = 1
                                                    
             else:
-                self.initialization_counter += 1   
-                
+                self.initialization_counter += 1                   
         
     def sensor_gps_callback(self, msg):
         """Callback function for sensor_gps topic subscriber."""
         self.sensor_gps = msg
+        
+    def input_rc_callback(self, msg):
+        """Callback function for input_rc topic subscriber."""
+        self.input_rc = msg
+        self.get_logger().info(f"Input RC: {msg}")  # used for development prints
+        #TODO: MAKE THIS TAKE INTO ACCOUNT THE RC LINK
+        if msg.rssi < 0.5:
+            self.hasRCLink = False
+        else:
+            self.hasRCLink = True
         
     
     def timer_debug_callback(self) -> None:
@@ -385,6 +398,8 @@ class VehicleGlobalPositionListener(Node):
         
         # Communication Status
         report.append("\n--- Communication Status ---")
+        rc_link_emoji = "📡✅" if self.hasRCLink else "📡❌"
+        report.append(f"RC Link: {'OK' if self.hasRCLink else 'LOST'} {rc_link_emoji}")        
         gcs_emoji = "📡✅" if not self.vehicle_status.gcs_connection_lost else "📡❌"
         report.append(f"GCS Connection: {'LOST' if self.vehicle_status.gcs_connection_lost else 'OK'} {gcs_emoji}")
         if self.vehicle_status.gcs_connection_lost:
@@ -533,6 +548,7 @@ class VehicleGlobalPositionListener(Node):
         # Other
         msg.is_flying = self.isFlying
         msg.is_offboard = self.isOffboard
+        msg.has_rc_link = self.hasRCLink
         if self.vehicle_local_position:
             msg.altitude_above_ground = self.vehicle_local_position.dist_bottom
             msg.heading_degrees = self.px4_yaw_to_heading(self.vehicle_local_position.heading)
