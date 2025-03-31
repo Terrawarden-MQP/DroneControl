@@ -47,7 +47,7 @@ class VehicleGlobalPositionListener(Node):
         self.hasRCLink = True
         self.arm_timestamp = None
         self.flight_start_timestamp = None
-        self.initialization_counter = 0     # after detecting vehicle is in onboard mode, wait for 5 seconds before taking autonomous control
+        self.initialization_counter = 0   
         self.home_coord_offset = [0.0, 0.0, 0.0]
         self.last_traj_setpoint_msg_PX4 = None        
         self.status_var_temp = 0
@@ -522,9 +522,10 @@ class VehicleGlobalPositionListener(Node):
         if self.vehicle_local_position:
             # Position
             pos = PoseStamped()
-            pos.pose.position.x = self.vehicle_local_position.x
-            pos.pose.position.y = self.vehicle_local_position.y
-            pos.pose.position.z = self.vehicle_local_position.z
+            NED_PX4_offset_pos = self.get_current_ned_pos()
+            pos.pose.position.x = NED_PX4_offset_pos[0]  # NED coordinates with home offset applied
+            pos.pose.position.y = NED_PX4_offset_pos[1]  
+            pos.pose.position.z = NED_PX4_offset_pos[2]  
             if self.vehicle_odometry:   # !!! Quaternion here is FRD frame to NED frame rotation
                 pos.pose.orientation.x = float(self.vehicle_odometry.q[0])
                 pos.pose.orientation.y = float(self.vehicle_odometry.q[1])
