@@ -544,7 +544,7 @@ class VehicleGlobalPositionListener(Node):
             
         # GPS
         if self.sensor_gps:
-            msg.gps = convert_px4_gps_to_navsat(self.sensor_gps)
+            msg.gps = self.convert_px4_gps_to_navsat(self.sensor_gps)
         
         # Other
         msg.is_flying = self.isFlying
@@ -566,38 +566,6 @@ class VehicleGlobalPositionListener(Node):
         
         else:
             msg.error = "TODO: make the error messages 📎"
-    
-        
-        # Convert PX4 sensor_gps to ROS2 NavSatFix
-        def convert_px4_gps_to_navsat(px4_gps):
-            navsat = NavSatFix()
-                
-            navsat.latitude = px4_gps.latitude_deg * 1e-7  # PX4 uses degrees * 1e7
-            navsat.longitude = px4_gps.longitude_deg * 1e-7  # PX4 uses degrees * 1e7
-            navsat.altitude = px4_gps.altitude_ellipsoid_m
-            
-            # Covariance matrix (9 elements for 3x3 matrix)
-            # PX4 provides eph (horizontal position error) and epv (vertical position error)
-            # Convert from m^2 to standard deviation squared
-            navsat.position_covariance[0] = px4_gps.eph * px4_gps.eph  # xx
-            navsat.position_covariance[4] = px4_gps.eph * px4_gps.eph  # yy
-            navsat.position_covariance[8] = px4_gps.epv * px4_gps.epv  # zz
-            
-            # Cross-terms are set to 0 as PX4 doesn't provide correlation data
-            navsat.position_covariance[1] = 0.0  # xy
-            navsat.position_covariance[2] = 0.0  # xz
-            navsat.position_covariance[3] = 0.0  # yx
-            navsat.position_covariance[5] = 0.0  # yz
-            navsat.position_covariance[6] = 0.0  # zx
-            navsat.position_covariance[7] = 0.0  # zy
-            
-            # set to uint8 COVARIANCE_TYPE_UNKNOWN = 0 if no GPS, and uint8 COVARIANCE_TYPE_DIAGONAL_KNOWN = 2 if lock
-            if self.sensor_gps.fix_type >= 3:
-                navsat.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
-            else:
-                navsat.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
-
-            return navsat
         
         self.ROS2_publish_drone_telemetry_publisher.publish(msg)
 
@@ -682,6 +650,36 @@ class VehicleGlobalPositionListener(Node):
             return False
         return self.is_at_position(self.get_traj_setpoint(), threshold)
     
+    # Convert PX4 sensor_gps to ROS2 NavSatFix
+    def convert_px4_gps_to_navsat(px4_gps):
+        navsat = NavSatFix()
+            
+        navsat.latitude = px4_gps.latitude_deg * 1e-7  # PX4 uses degrees * 1e7
+        navsat.longitude = px4_gps.longitude_deg * 1e-7  # PX4 uses degrees * 1e7
+        navsat.altitude = px4_gps.altitude_ellipsoid_m
+        
+        # Covariance matrix (9 elements for 3x3 matrix)
+        # PX4 provides eph (horizontal position error) and epv (vertical position error)
+        # Convert from m^2 to standard deviation squared
+        navsat.position_covariance[0] = px4_gps.eph * px4_gps.eph  # xx
+        navsat.position_covariance[4] = px4_gps.eph * px4_gps.eph  # yy
+        navsat.position_covariance[8] = px4_gps.epv * px4_gps.epv  # zz
+        
+        # Cross-terms are set to 0 as PX4 doesn't provide correlation data
+        navsat.position_covariance[1] = 0.0  # xy
+        navsat.position_covariance[2] = 0.0  # xz
+        navsat.position_covariance[3] = 0.0  # yx
+        navsat.position_covariance[5] = 0.0  # yz
+        navsat.position_covariance[6] = 0.0  # zx
+        navsat.position_covariance[7] = 0.0  # zy
+        
+        # set to uint8 COVARIANCE_TYPE_UNKNOWN = 0 if no GPS, and uint8 COVARIANCE_TYPE_DIAGONAL_KNOWN = 2 if lock
+        if self.sensor_gps.fix_type >= 3:
+            navsat.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+        else:
+            navsat.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
+
+        return navsat
     
     # ----- PX4 commands, not used for safety
                 
@@ -701,6 +699,12 @@ class VehicleGlobalPositionListener(Node):
         """Switch to land mode."""
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
         self.get_logger().info("Switching to land mode")
+        
+    def reboot(self):
+        """Send a reboot command to the vehicle."""
+        self.publish_vehicle_command(
+            VehicleCommand.VEHICLE_CMD_PREFLIGHT_REBOOT_SHUTDOWN, param1=1.0)
+        self.get_logger().info('Reboot command sent')
         
         
     # -----
