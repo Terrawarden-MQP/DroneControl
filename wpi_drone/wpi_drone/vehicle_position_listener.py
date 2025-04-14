@@ -220,7 +220,7 @@ class VehicleGlobalPositionListener(Node):
         if self.isFlying:
             if self.flight_start_timestamp is None:
                 self.flight_start_timestamp = vehicle_status.timestamp
-                self.home_coord_offset = [self.vehicle_local_position.x, self.vehicle_local_position.y, self.vehicle_local_position.z]
+                # self.home_coord_offset = [self.vehicle_local_position.x, self.vehicle_local_position.y, self.vehicle_local_position.z]
         else:
             self.flight_start_timestamp = None
             
@@ -442,7 +442,7 @@ class VehicleGlobalPositionListener(Node):
         report.append(f"{'[m/s] Local NED VZ':25} {self.vehicle_local_position.vz:>10.3f} {self.vehicle_local_position.evv:>10.3f}")
         
         readable_heading = self.px4_yaw_to_heading(self.vehicle_local_position.heading)
-        report.append(f"\n{'[deg] Global Heading':25} {readable_heading:>10.3f} {self.vehicle_local_position.heading_var * 57.2958:>10.3f}")
+        report.append(f"\n{'[deg] Global Heading':25} {readable_heading:>10.3f} {self.vehicle_local_position.heading_var * math.pi / 180:>10.3f}")
         
         self.get_logger().info("\n".join(report))
 
@@ -480,22 +480,27 @@ class VehicleGlobalPositionListener(Node):
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.vehicle_command_publisher.publish(msg)
         
-    def publish_trajectory_setpoint(self, position_NED: list[float, float, float], heading_deg:float = None, max_ang_vel_deg_s:float = None, max_lin_vel_m_s:float = None, max_z_vel_m_s:float = None, max_lin_accel_m_s2:float = None) -> None:
+    # https://docs.px4.io/v1.14/en/flight_modes/offboard.html
+    # https://docs.px4.io/main/en/msg_docs/TrajectorySetpoint.html
+    # If commanded position, additional velocity and acceleration are used as feedforward
+    def publish_trajectory_setpoint(self, position_NED: list[float, float, float], heading_deg:float = None, 
+                                    max_ang_vel_deg_s:float = None, max_lin_vel_m_s:float = None, max_z_vel_m_s:float = None, 
+                                    max_lin_accel_m_s2:float = None) -> None:
         """Publish a trajectory setpoint in drone NED with home offset applied
         Takes in a position list [x, y, z] in meters and a yaw in degrees as bearing
         Optional parameters for max angular velocity, linear velocity, z velocity, and linear acceleration
         If any velocity parameter is <= 0, drone will hold current position
         """
-        msg = TrajectorySetpoint()
-        msg.position = [position_NED[0] + self.home_coord_offset[0], position_NED[1] + self.home_coord_offset[1], position_NED[2] + self.home_coord_offset[2]]
+        msg = TrajectorySetpoint()        
+        msg.position = self.convert_to_PX4_ned_coordinates(position_NED)
         if heading_deg is not None:
             msg.yaw = heading_deg * (math.pi / 180.0)  # Convert degrees to radians
         else:
             msg.yaw = self.vehicle_local_position.heading
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         
-        if max_ang_vel_deg_s:
-            msg.yawspeed = max_ang_vel_deg_s * (math.pi / 180.0)
+        if max_ang_vel_deg_s is not None:
+            msg.yawspeed = max_ang_vel_deg_s * (math.pi / 180.0) # Convert degrees to radians per sec
             
         if max_lin_vel_m_s and max_z_vel_m_s:
             msg.velocity = [max_lin_vel_m_s, max_lin_vel_m_s, max_z_vel_m_s]
@@ -504,7 +509,7 @@ class VehicleGlobalPositionListener(Node):
             msg.acceleration = [max_lin_accel_m_s2, max_lin_accel_m_s2, max_lin_accel_m_s2]      
         
         self.last_traj_setpoint_msg_PX4 = msg
-        self.get_logger().info(f"Trajectory setpoint: {msg.position}")
+        self.get_logger().info(f"Trajectory setpoint: {msg}")
         self.trajectory_setpoint_publisher.publish(msg)
         
     def ROS2_waypoint_callback(self, msg):
@@ -513,7 +518,9 @@ class VehicleGlobalPositionListener(Node):
         
         # publish the trajectory setpoint
         # --JJ I am not proud of this line of code, but it works
-        self.publish_trajectory_setpoint([msg.ned_pos.x, msg.ned_pos.y, msg.ned_pos.z], msg.heading_degrees, msg.max_ang_vel_deg_s, msg.max_lin_vel_m_s, msg.max_z_vel_m_s, msg.max_lin_accel_m_s2)
+        self.publish_trajectory_setpoint([msg.ned_pos.x, msg.ned_pos.y, msg.ned_pos.z], msg.heading_degrees, #pos
+                                         msg.max_ang_vel_deg_s, msg.max_lin_vel_m_s, msg.max_z_vel_m_s,      #max vel
+                                         msg.max_lin_accel_m_s2)                                             #max acc
         
     def ROS2_publish_drone_telemetry(self) -> None:
         """Publish the drone telemetry."""
@@ -527,10 +534,10 @@ class VehicleGlobalPositionListener(Node):
             pos.pose.position.y = NED_PX4_offset_pos[1]  
             pos.pose.position.z = NED_PX4_offset_pos[2]  
             if self.vehicle_odometry:   # !!! Quaternion here is FRD frame to NED frame rotation
-                pos.pose.orientation.x = float(self.vehicle_odometry.q[0])
-                pos.pose.orientation.y = float(self.vehicle_odometry.q[1])
-                pos.pose.orientation.z = float(self.vehicle_odometry.q[2])
-                pos.pose.orientation.w = float(self.vehicle_odometry.q[3])
+                pos.pose.orientation.w = float(self.vehicle_odometry.q[0])
+                pos.pose.orientation.x = float(self.vehicle_odometry.q[1])
+                pos.pose.orientation.y = float(self.vehicle_odometry.q[2])
+                pos.pose.orientation.z = float(self.vehicle_odometry.q[3])
             pos.header.stamp = self.get_clock().now().to_msg()
             msg.pos = pos
             
@@ -614,7 +621,8 @@ class VehicleGlobalPositionListener(Node):
     def get_current_ned_pos(self) -> list[float, float, float]:
         """Get the current position in NED coordinates"""
         # autonatically offsets from the PX4 internal tracking system
-        return [self.vehicle_local_position.x - self.home_coord_offset[0], self.vehicle_local_position.y - self.home_coord_offset[1], self.vehicle_local_position.z - self.home_coord_offset[2]]
+        return self.convert_from_PX4_ned_coordinates([self.vehicle_local_position.x, self.vehicle_local_position.y, self.vehicle_local_position.z])
+        # return [self.vehicle_local_position.x - self.home_coord_offset[0], self.vehicle_local_position.y - self.home_coord_offset[1], self.vehicle_local_position.z - self.home_coord_offset[2]]
     
     def get_traj_setpoint(self) -> list[float, float, float]:
         """Get the trajectory setpoint in NED coordinates
@@ -651,7 +659,7 @@ class VehicleGlobalPositionListener(Node):
         return self.is_at_position(self.get_traj_setpoint(), threshold)
     
     # Convert PX4 sensor_gps to ROS2 NavSatFix
-    def convert_px4_gps_to_navsat(px4_gps):
+    def convert_px4_gps_to_navsat(self, px4_gps):
         navsat = NavSatFix()
             
         navsat.latitude = px4_gps.latitude_deg * 1e-7  # PX4 uses degrees * 1e7
