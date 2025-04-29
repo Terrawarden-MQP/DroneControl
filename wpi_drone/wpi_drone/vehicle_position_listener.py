@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""
+TerraWardenDrone Communication Node - ROS2/PX4 Interface
+
+This node provides a bridge between ROS2 and PX4, enabling autonomous drone control
+through custom high-level commands while handling all the low-level PX4 communication.
+
+Key Features:
+- Manages PX4 offboard control mode
+- Translates between custom ROS2 messages and PX4 messages
+- Provides telemetry and state reporting
+- Handles position control in NED (North, East, Down) coordinate frame
+
+Repository: https://github.com/Terrawarden-MQP/TerraWardenDrone
+"""
 
 import rclpy
 from rclpy.node import Node
