@@ -27,14 +27,6 @@ A PX4-ROS2 communication node for autonomous drone operations, part of the Terra
 
 The communication uses [uORB messages](https://docs.px4.io/main/en/msg_docs/index.html) in a similar publisher/subscriber model as ROS2.
 
-## Running the Code
-
-```bash
-colcon build
-source ~/Desktop/ros_ws/install/setup.bash
-ros2 launch joisie_vision live_detect.launch.py
-```
-
 ## Additional Resources
 
 - [PX4 Multicopter Frame Documentation](https://docs.px4.io/main/en/frames_multicopter/)
